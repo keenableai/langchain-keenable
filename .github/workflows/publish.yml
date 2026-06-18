@@ -1,0 +1,50 @@
+name: Publish to PyPI
+
+# Publishes langchain-keenable to PyPI via Trusted Publishing (OIDC) — no API
+# tokens or passwords. Runs when a GitHub Release is published. The release tag
+# must match the version in pyproject.toml (e.g. tag v0.1.0 -> version 0.1.0).
+#
+# One-time setup on PyPI (see PUBLISH.md): register a Trusted Publisher /
+# pending publisher for project `langchain-keenable` pointing at this repo,
+# workflow `publish.yml`, environment `pypi`.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    name: Build distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Build sdist + wheel
+        run: uv build
+      - name: Check metadata
+        run: uvx twine check dist/*
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/langchain-keenable
+    permissions:
+      id-token: write # required for Trusted Publishing (OIDC)
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish to PyPI (Trusted Publishing)
+        uses: pypa/gh-action-pypi-publish@release/v1
