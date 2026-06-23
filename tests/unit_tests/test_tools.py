@@ -106,20 +106,6 @@ def test_mode_defaults_to_pro(mock_post: MagicMock) -> None:
     assert mock_post.call_args.kwargs["json"]["mode"] == "pro"
 
 
-def test_mode_class_default_override(mock_post: MagicMock) -> None:
-    """A class-level ``mode`` default is used when no per-call mode is given."""
-    tool = KeenableSearch(api_key="fake-key", mode="realtime")  # type: ignore[arg-type]
-    tool.invoke({"query": "anything"})
-    assert mock_post.call_args.kwargs["json"]["mode"] == "realtime"
-
-
-def test_mode_per_invocation_override(mock_post: MagicMock) -> None:
-    """A per-invocation ``mode`` wins over the class default."""
-    tool = KeenableSearch(api_key="fake-key", mode="pro")  # type: ignore[arg-type]
-    tool.invoke({"query": "anything", "mode": "realtime"})
-    assert mock_post.call_args.kwargs["json"]["mode"] == "realtime"
-
-
 def test_filters_are_per_invocation(mock_post: MagicMock) -> None:
     """site and date filters are sent from the invocation args, not config."""
     tool = KeenableSearch(api_key="fake-key")  # type: ignore[arg-type]
@@ -260,26 +246,6 @@ def test_http_errors_are_returned_not_raised(
     assert isinstance(out, str)
     assert needle in out.lower()
     assert "upgrade" in out
-
-
-def test_realtime_feature_not_enabled_is_returned(mock_post: MagicMock) -> None:
-    """A 403 'feature not enabled' (realtime on the keyless endpoint) is surfaced
-    to the agent as a string, not raised."""
-    mock_post.return_value = _error_response(
-        403,
-        {
-            "error": "Feature not enabled",
-            "message": "Realtime search mode is not enabled for your organization.",
-        },
-    )
-    tool = KeenableSearch()
-    out = tool.invoke({"query": "anything", "mode": "realtime"})
-
-    assert isinstance(out, str)
-    assert "403" in out
-    assert "realtime" in out.lower()
-    # the forwarded mode reached the request body
-    assert mock_post.call_args.kwargs["json"]["mode"] == "realtime"
 
 
 def test_network_timeout_is_returned(mock_post: MagicMock) -> None:

@@ -301,9 +301,9 @@ class KeenableSearchInput(BaseModel):
         default=None,
         description="only pages indexed on or before this date (YYYY-MM-DD)",
     )
-    mode: Literal["pro", "realtime"] | None = Field(
+    mode: Literal["pro"] | None = Field(
         default=None,
-        description="search mode: 'pro' (default, deeper) or 'realtime' (low latency)",
+        description="search mode: 'pro' (default, deeper retrieval)",
     )
 
 
@@ -362,11 +362,8 @@ class KeenableSearch(_KeenableBaseTool):
     )
     args_schema: type[BaseModel] = KeenableSearchInput
 
-    mode: Literal["pro", "realtime"] = "pro"
-    """Default search mode, overridable per invocation. ``"pro"`` (default) does
-    deeper retrieval with higher result quality; use ``"realtime"`` for
-    latency-sensitive cases such as voice agents. ``"realtime"`` requires an org
-    key (it is not enabled on the keyless public endpoint)."""
+    mode: Literal["pro"] = "pro"
+    """Default search mode. ``"pro"`` (default) does deeper retrieval with higher result quality."""
 
     def _search(
         self,
