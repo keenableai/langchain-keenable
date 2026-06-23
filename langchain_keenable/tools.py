@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import os
-import socket
 from importlib import metadata
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -38,120 +37,65 @@ _DEFAULT_BASE_URL = "https://api.keenable.ai"
 _BASE_URL_ENV = "KEENABLE_API_URL"
 
 
-def _candidate_ips(host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
-    """Every IP address ``host`` could denote, without doing DNS.
-
-    Covers dotted/colon literals *and* the numeric IPv4 encodings that resolvers
-    accept but :func:`ipaddress.ip_address` rejects as strings — decimal
-    (``2130706433``), hex (``0x7f000001``), octal (``0177.0.0.1``) and short
-    ``a.b``/``a.b.c`` forms — all of which ``socket.inet_aton`` canonicalizes to
-    a real IPv4 so the private-range check sees the true address.
-    """
-    candidates: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
-    try:
-        candidates.append(ipaddress.ip_address(host))
-    except ValueError:
-        pass
-    try:
-        packed = socket.inet_aton(host)
-    except OSError:
-        pass
-    else:
-        candidates.append(ipaddress.ip_address(socket.inet_ntoa(packed)))
-    return candidates
-
-
-def _redact(text: str, api_key: str | None) -> str:
-    """Strip the API key from any text bound for an exception message or log.
-
-    Server error bodies and transport-exception strings are attacker- or
-    misconfiguration-influenced; a server that echoed the ``X-API-Key`` request
-    header back in its response would otherwise leak the key into our
-    ``ToolException`` text (and from there into the agent's ToolMessage / logs).
-    """
-    return text.replace(api_key, "***") if api_key else text
-
-
 def _reject_private_fetch_target(url: str) -> None:
     """Refuse obviously private/internal fetch targets before sending (SSRF).
 
     The backend enforces private/internal-IP protection server-side too, but a
     client-side guard avoids leaking an internal hostname in a request and is
-    required by the integration contract. Hostnames that are not IP literals
-    (and not a numeric IPv4 form) pass through — the backend's SSRF guard is the
-    backstop for those.
+    required by the integration contract. Domain names that aren't IP literals
+    are passed through — the backend's SSRF guard is the backstop for those.
     """
     host = (urlsplit(url).hostname or "").strip().lower()
-    # A trailing dot is the FQDN form of the same name (``localhost.`` ==
-    # ``localhost``); strip it so it can't slip past the checks below.
-    host = host.rstrip(".")
     if not host:
         msg = f"Refusing to fetch a URL with no host: {url!r}"
         raise ToolException(msg)
     if host in {"localhost", "metadata.google.internal"}:
         msg = f"Refusing to fetch a private/internal host: {host!r}"
         raise ToolException(msg)
-    for ip in _candidate_ips(host):
-        # ``is_reserved`` is intentionally omitted: it flags non-routable but
-        # harmless ranges (e.g. the 2001:db8::/32 documentation prefix). The
-        # checks below are the ones that matter for SSRF.
-        if (
-            ip.is_loopback
-            or ip.is_private
-            or ip.is_link_local
-            or ip.is_multicast
-            or ip.is_unspecified
-        ):
-            msg = f"Refusing to fetch a private/internal address: {host!r}"
-            raise ToolException(msg)
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return
+    if (
+        ip.is_loopback
+        or ip.is_private
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    ):
+        msg = f"Refusing to fetch a private/internal address: {host!r}"
+        raise ToolException(msg)
 
 
 def _resolve_base_url() -> str:
     """Resolve the API base URL from ``KEENABLE_API_URL`` and enforce HTTPS."""
     base = (os.environ.get(_BASE_URL_ENV) or _DEFAULT_BASE_URL).rstrip("/")
     parsed = urlsplit(base)
-    host = (parsed.hostname or "").rstrip(".")
     # A usable absolute URL needs a host; bail out clearly on e.g. "https://"
     # instead of letting a malformed base produce a broken request URL later.
-    if not host:
-        msg = f"{_BASE_URL_ENV} must be an https:// URL with a host, got {base!r}"
-        raise ToolException(msg)
-    # Local-dev escape hatch: permit plain http only to an explicit loopback host.
-    if parsed.scheme == "http" and host in {"localhost", "127.0.0.1", "::1"}:
-        return base
-    if parsed.scheme != "https":
-        msg = f"{_BASE_URL_ENV} must be an https:// URL with a host, got {base!r}"
-        raise ToolException(msg)
-    # Over https, refuse a base URL pointing at a private/internal destination —
-    # a misconfigured KEENABLE_API_URL must never ship API keys to an internal
-    # host (the same SSRF set as _reject_private_fetch_target).
-    if host == "metadata.google.internal" or any(
-        ip.is_loopback
-        or ip.is_private
-        or ip.is_link_local
-        or ip.is_multicast
-        or ip.is_unspecified
-        for ip in _candidate_ips(host)
-    ):
-        msg = (
-            f"{_BASE_URL_ENV} must not point at a private/internal address, "
-            f"got {base!r}"
-        )
-        raise ToolException(msg)
-    return base
+    if parsed.hostname:
+        if parsed.scheme == "https":
+            return base
+        # Permit plain http only for local development against a loopback host.
+        if parsed.scheme == "http" and parsed.hostname in {
+            "localhost",
+            "127.0.0.1",
+            "::1",
+        }:
+            return base
+    msg = f"{_BASE_URL_ENV} must be an https:// URL with a host, got {base!r}"
+    raise ToolException(msg)
 
 
-def _raise_for_keenable_status(
-    response: requests.Response, api_key: str | None
-) -> None:
+def _raise_for_keenable_status(response: requests.Response) -> None:
     """Map a non-2xx Keenable response to a helpful ``ToolException``.
 
     The backend returns useful bodies (including upgrade/auth instructions); we
     surface them instead of swallowing them behind a generic error. Returning a
     ``ToolException`` (with ``handle_tool_error = True``) hands the message back
     to the agent as a ``ToolMessage`` so it can react, rather than crashing the
-    agent loop. The body is attacker-/misconfiguration-influenced, so the key is
-    redacted out of it before it reaches the exception text.
+    agent loop.
     """
     if response.ok:
         return
@@ -165,7 +109,6 @@ def _raise_for_keenable_status(
             )
     except ValueError:
         detail = (response.text or "").strip()
-    detail = _redact(detail[:200], api_key)
 
     label = {
         401: "Keenable authentication failed (401)",
@@ -221,20 +164,16 @@ class _KeenableBaseTool(BaseTool):
 
     def _handle(self, response: requests.Response) -> dict[str, Any]:
         """Validate status and decode a JSON object body, or raise ToolException."""
-        key = self._effective_key()
-        _raise_for_keenable_status(response, key)
+        _raise_for_keenable_status(response)
         try:
             data = response.json()
         except ValueError as e:
-            snippet = _redact((response.text or "")[:200], key)
+            snippet = (response.text or "")[:200]
             msg = f"Keenable API returned a non-JSON response: {snippet!r}"
             raise ToolException(msg) from e
 
         if not isinstance(data, dict):
-            msg = (
-                "Unexpected response from the Keenable API: "
-                f"{_redact(repr(data)[:200], key)}"
-            )
+            msg = f"Unexpected response from the Keenable API: {data!r}"
             raise ToolException(msg)
         return data
 
@@ -249,11 +188,7 @@ class _KeenableBaseTool(BaseTool):
                 url, json=payload, headers=headers, timeout=self.timeout
             )
         except requests.RequestException as e:
-            key = self._effective_key()
-            msg = (
-                f"Could not reach the Keenable API: "
-                f"{type(e).__name__}: {_redact(str(e), key)}"
-            )
+            msg = f"Could not reach the Keenable API: {e!r}"
             raise ToolException(msg) from e
         return self._handle(response)
 
@@ -267,11 +202,7 @@ class _KeenableBaseTool(BaseTool):
                 url, params=params, headers=headers, timeout=self.timeout
             )
         except requests.RequestException as e:
-            key = self._effective_key()
-            msg = (
-                f"Could not reach the Keenable API: "
-                f"{type(e).__name__}: {_redact(str(e), key)}"
-            )
+            msg = f"Could not reach the Keenable API: {e!r}"
             raise ToolException(msg) from e
         return self._handle(response)
 
@@ -301,9 +232,9 @@ class KeenableSearchInput(BaseModel):
         default=None,
         description="only pages indexed on or before this date (YYYY-MM-DD)",
     )
-    mode: Literal["pro", "realtime"] | None = Field(
+    mode: Literal["pro"] | None = Field(
         default=None,
-        description="search mode: 'pro' (default, deeper) or 'realtime' (low latency)",
+        description="search mode: 'pro' (default)",
     )
 
 
@@ -362,11 +293,9 @@ class KeenableSearch(_KeenableBaseTool):
     )
     args_schema: type[BaseModel] = KeenableSearchInput
 
-    mode: Literal["pro", "realtime"] = "pro"
+    mode: Literal["pro"] = "pro"
     """Default search mode, overridable per invocation. ``"pro"`` (default) does
-    deeper retrieval with higher result quality; use ``"realtime"`` for
-    latency-sensitive cases such as voice agents. ``"realtime"`` requires an org
-    key (it is not enabled on the keyless public endpoint)."""
+    deeper retrieval with higher result quality."""
 
     def _search(
         self,
@@ -392,10 +321,7 @@ class KeenableSearch(_KeenableBaseTool):
         data = self._post("/v1/search/public", "/v1/search", payload)
         results = data.get("results")
         if not isinstance(results, list):
-            msg = (
-                "Unexpected response from the Keenable search API: "
-                f"{_redact(repr(data)[:200], self._effective_key())}"
-            )
+            msg = f"Unexpected response from the Keenable search API: {data!r}"
             raise ToolException(msg)
         # The API returns a fixed-size result set; it is returned as-is (there is
         # no max_results parameter to honor).
