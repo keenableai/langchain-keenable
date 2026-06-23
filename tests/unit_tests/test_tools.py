@@ -106,8 +106,6 @@ def test_mode_defaults_to_pro(mock_post: MagicMock) -> None:
     assert mock_post.call_args.kwargs["json"]["mode"] == "pro"
 
 
-
-
 def test_filters_are_per_invocation(mock_post: MagicMock) -> None:
     """site and date filters are sent from the invocation args, not config."""
     tool = KeenableSearch(api_key="fake-key")  # type: ignore[arg-type]
@@ -248,7 +246,6 @@ def test_http_errors_are_returned_not_raised(
     assert isinstance(out, str)
     assert needle in out.lower()
     assert "upgrade" in out
-
 
 
 def test_network_timeout_is_returned(mock_post: MagicMock) -> None:
