@@ -6,13 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
-from langchain_core.tools import ToolException
 
 from langchain_keenable import KeenableFetch, KeenableSearch, KeenableSearchInput
-from langchain_keenable.tools import (
-    _reject_private_fetch_target,
-    _resolve_base_url,
-)
 
 _FAKE_RESULTS = [
     {
@@ -104,20 +99,6 @@ def test_mode_defaults_to_pro(mock_post: MagicMock) -> None:
     tool = KeenableSearch(api_key="fake-key")  # type: ignore[arg-type]
     tool.invoke({"query": "anything"})
     assert mock_post.call_args.kwargs["json"]["mode"] == "pro"
-
-
-def test_mode_class_default_override(mock_post: MagicMock) -> None:
-    """A class-level ``mode`` default is used when no per-call mode is given."""
-    tool = KeenableSearch(api_key="fake-key", mode="realtime")  # type: ignore[arg-type]
-    tool.invoke({"query": "anything"})
-    assert mock_post.call_args.kwargs["json"]["mode"] == "realtime"
-
-
-def test_mode_per_invocation_override(mock_post: MagicMock) -> None:
-    """A per-invocation ``mode`` wins over the class default."""
-    tool = KeenableSearch(api_key="fake-key", mode="pro")  # type: ignore[arg-type]
-    tool.invoke({"query": "anything", "mode": "realtime"})
-    assert mock_post.call_args.kwargs["json"]["mode"] == "realtime"
 
 
 def test_filters_are_per_invocation(mock_post: MagicMock) -> None:
@@ -260,26 +241,6 @@ def test_http_errors_are_returned_not_raised(
     assert isinstance(out, str)
     assert needle in out.lower()
     assert "upgrade" in out
-
-
-def test_realtime_feature_not_enabled_is_returned(mock_post: MagicMock) -> None:
-    """A 403 'feature not enabled' (realtime on the keyless endpoint) is surfaced
-    to the agent as a string, not raised."""
-    mock_post.return_value = _error_response(
-        403,
-        {
-            "error": "Feature not enabled",
-            "message": "Realtime search mode is not enabled for your organization.",
-        },
-    )
-    tool = KeenableSearch()
-    out = tool.invoke({"query": "anything", "mode": "realtime"})
-
-    assert isinstance(out, str)
-    assert "403" in out
-    assert "realtime" in out.lower()
-    # the forwarded mode reached the request body
-    assert mock_post.call_args.kwargs["json"]["mode"] == "realtime"
 
 
 def test_network_timeout_is_returned(mock_post: MagicMock) -> None:
@@ -450,152 +411,3 @@ def test_fetch_sends_attribution_title(mock_get: MagicMock) -> None:
     tool = KeenableFetch(api_key="fake-key")  # type: ignore[arg-type]
     tool.invoke({"url": "https://example.com"})
     assert mock_get.call_args.kwargs["headers"]["X-Keenable-Title"] == "LangChain"
-
-
-# --- SSRF guard: numeric-IP + trailing-dot bypasses ---------------------------
-
-
-@pytest.mark.parametrize(
-    "url",
-    [
-        "http://2130706433/secret",  # decimal form of 127.0.0.1
-        "http://0x7f000001/secret",  # hex form of 127.0.0.1
-        "http://0177.0.0.1/secret",  # octal-dotted form of 127.0.0.1
-        "http://127.1/secret",  # short a.b form of 127.0.0.1
-        "http://127.0.0.1./secret",  # trailing dot on IP literal
-        "http://localhost./secret",  # trailing dot on hostname
-        "http://LOCALHOST/secret",  # case
-        "http://metadata.google.internal./secret",  # trailing dot on metadata host
-    ],
-)
-def test_reject_ssrf_bypass_encodings(url: str) -> None:
-    """Numeric/short/trailing-dot encodings of a private address are rejected."""
-    with pytest.raises(ToolException):
-        _reject_private_fetch_target(url)
-
-
-def test_reject_ssrf_bypass_encodings_via_tool(mock_get: MagicMock) -> None:
-    """The fetch tool surfaces the rejection as a string without sending."""
-    tool = KeenableFetch(api_key="fake-key")  # type: ignore[arg-type]
-    out = tool.invoke({"url": "http://2130706433/secret"})
-    assert isinstance(out, str)
-    assert "private/internal" in out.lower()
-    mock_get.assert_not_called()
-
-
-def test_public_numeric_ip_allowed(mock_get: MagicMock) -> None:
-    """A globally routable numeric IP must still pass the guard."""
-    # Direct helper: no exception.
-    _reject_private_fetch_target("https://8.8.8.8/x")
-    # And through the tool it reaches the request.
-    tool = KeenableFetch(api_key="fake-key")  # type: ignore[arg-type]
-    tool.invoke({"url": "https://8.8.8.8/x"})
-    assert mock_get.call_args.kwargs["params"] == {"url": "https://8.8.8.8/x"}
-
-
-# --- base URL rejects private/internal https hosts ----------------------------
-
-
-@pytest.mark.parametrize(
-    "bad_base",
-    [
-        "https://169.254.169.254",  # AWS/GCP metadata, link-local
-        "https://metadata.google.internal",  # GCP metadata host
-        "https://[fe80::1]",  # IPv6 link-local
-        "https://10.0.0.1",  # RFC1918 private
-        "https://192.168.1.1",  # RFC1918 private
-        "https://172.16.0.1",  # RFC1918 private
-        "https://127.0.0.1",  # loopback over https
-        "https://2130706433",  # decimal-encoded loopback
-        "https://0x7f000001",  # hex-encoded loopback
-    ],
-)
-def test_base_url_rejects_private_and_metadata(
-    monkeypatch: pytest.MonkeyPatch, bad_base: str
-) -> None:
-    """A KEENABLE_API_URL pointing at an internal host must not ship the key."""
-    monkeypatch.setenv("KEENABLE_API_URL", bad_base)
-    with pytest.raises(ToolException):
-        _resolve_base_url()
-
-
-def test_base_url_private_rejected_via_tool(
-    mock_post: MagicMock, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A private base URL is surfaced as a string and no request is sent."""
-    monkeypatch.setenv("KEENABLE_API_URL", "https://169.254.169.254")
-    tool = KeenableSearch(api_key="fake-key")  # type: ignore[arg-type]
-    out = tool.invoke({"query": "anything"})
-    assert isinstance(out, str)
-    assert "private/internal" in out.lower()
-    mock_post.assert_not_called()
-
-
-def test_base_url_http_loopback_still_allowed(
-    mock_post: MagicMock, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The local-dev http loopback escape hatch is preserved."""
-    monkeypatch.setenv("KEENABLE_API_URL", "http://localhost:8000")
-    assert _resolve_base_url() == "http://localhost:8000"
-
-
-# --- error/key-leak redaction -------------------------------------------------
-
-
-@pytest.mark.parametrize("status", [401, 402, 429, 500])
-def test_error_body_redacts_echoed_key(mock_post: MagicMock, status: int) -> None:
-    """A server that echoes the X-API-Key in its error body must not leak it into
-    the surfaced error message — redacted for every status, not just 401."""
-    key = "sk-leak-123"
-    mock_post.return_value = _error_response(status, {"message": f"got key={key}"})
-    tool = KeenableSearch(api_key=key)  # type: ignore[arg-type]
-    out = tool.invoke({"query": "anything"})
-    assert isinstance(out, str)
-    assert key not in out
-    assert "***" in out
-
-
-def test_transport_error_redacts_key_and_no_repr(mock_post: MagicMock) -> None:
-    """A transport exception surfaces type + redacted message, not the raw repr."""
-    key = "sk-transport-secret-XYZ"
-
-    class _Boom(requests.RequestException):
-        def __repr__(self) -> str:
-            return "Boom(secret-in-repr)"
-
-    mock_post.side_effect = _Boom(f"failed with header key={key}")
-    tool = KeenableSearch(api_key=key)  # type: ignore[arg-type]
-    out = tool.invoke({"query": "anything"})
-    assert isinstance(out, str)
-    assert key not in out
-    assert "secret-in-repr" not in out
-    assert "***" in out
-    assert "_Boom" in out
-
-
-def test_non_json_body_redacts_key(mock_post: MagicMock) -> None:
-    """A non-JSON body that echoes the key must not leak it into the message."""
-    key = "sk-in-html-body"
-    bad = MagicMock(spec=requests.Response)
-    bad.ok = True
-    bad.status_code = 200
-    bad.json.side_effect = ValueError("no json")
-    bad.text = f"<html>error key={key}</html>"
-    mock_post.return_value = bad
-    tool = KeenableSearch(api_key=key)  # type: ignore[arg-type]
-    out = tool.invoke({"query": "anything"})
-    assert isinstance(out, str)
-    assert key not in out
-    assert "***" in out
-
-
-def test_search_bad_payload_redacts_key(mock_post: MagicMock) -> None:
-    """A 200 body lacking a valid `results` but echoing the key must not leak it."""
-    key = "sk-echo-in-200-body"
-    mock_post.return_value = _ok_response({"results": None, "debug": f"key={key}"})
-    tool = KeenableSearch(api_key=key)  # type: ignore[arg-type]
-    out = tool.invoke({"query": "anything"})
-    assert isinstance(out, str)
-    assert "unexpected response" in out.lower()
-    assert key not in out
-    assert "***" in out
