@@ -37,14 +37,12 @@ results = tool.invoke({
     "site": "github.com",          # optional: restrict to a domain
     "published_after": "2026-01-01",  # optional: YYYY-MM-DD date filters
     # "published_before" / "acquired_after" / "acquired_before" also supported
-    # "mode": "realtime",          # optional per-call override (needs an org key)
 })
 for result in results:
     print(result["title"], result["url"])
 ```
 
-`mode` defaults to `"pro"` (deeper retrieval); use `"realtime"` for latency-sensitive cases such as
-voice agents. It can be set as a class default and overridden per call. `realtime` requires an org key.
+`mode` defaults to `"pro"` (deeper retrieval). It can be set as a class default and overridden per call.
 
 ### `KeenableFetch`
 
