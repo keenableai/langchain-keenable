@@ -406,8 +406,8 @@ class KeenableSearch(_KeenableBaseTool):
         ):
             if value:
                 payload[field] = value
-        # The ranker scores "{query} (task: {objective})"; retrieval reads only
-        # the query. Blank values are not sent.
+        # Ranking uses query and objective together; retrieval reads only the
+        # query. Blank values are not sent.
         if objective and objective.strip():
             objective = objective.strip()
             if len(objective) > _MAX_OBJECTIVE_CHARS:

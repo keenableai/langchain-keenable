@@ -43,7 +43,7 @@ for result in results:
 ```
 
 `objective` (optional, at most 1,000 characters) is two or three natural sentences on what the search is for.
-It changes ranking: the ranker scores `"{query} (task: {objective})"`, while retrieval reads only the query.
+Keenable ranks results by `query` and `objective` together; retrieval reads only `query`, so put the words that matter in `query`.
 Blank values are not sent.
 
 ```python
