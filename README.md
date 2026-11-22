@@ -42,6 +42,17 @@ for result in results:
     print(result["title"], result["url"])
 ```
 
+`objective` (optional, at most 1,000 characters) is two or three natural sentences on what the search is for.
+It changes ranking: the ranker scores `"{query} (task: {objective})"`, while retrieval reads only the query.
+Blank values are not sent.
+
+```python
+tool.invoke({
+    "query": "Q3 2026 revenue",
+    "objective": "I need Acme Corp's reported Q3 2026 revenue in USD from its own investor relations page, not press speculation.",
+})
+```
+
 `mode` defaults to `"pro"` (deeper retrieval). It can be set as a class default and overridden per call.
 
 ### `KeenableFetch`

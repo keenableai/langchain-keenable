@@ -305,6 +305,22 @@ class KeenableSearchInput(BaseModel):
         default=None,
         description="search mode: 'pro' (default, deeper retrieval)",
     )
+    objective: str | None = Field(
+        default=None,
+        description=(
+            "Optional. Two or three natural sentences, with no field labels and no "
+            "line breaks, that cover: the exact facts, entities, numbers, dates or "
+            "names a useful page must contain; task context the query does not "
+            "state (who, where, when, eligibility, date window); which kinds of "
+            "sources count or must be excluded; what is already established from "
+            "earlier steps; and what is still unknown. Every sentence must be self-"
+            "contained: name the entities, places, dates and figures explicitly, "
+            "and never refer to 'the task', 'the clue', 'the question', 'above' or "
+            "earlier results. Do not paste the conversation, and do not include "
+            "personal, confidential or sensitive information. At most 1,000 "
+            "characters."
+        ),
+    )
 
 
 class KeenableSearch(_KeenableBaseTool):
@@ -357,7 +373,8 @@ class KeenableSearch(_KeenableBaseTool):
         "A web search engine built for AI agents, powered by Keenable. "
         "Useful for when you need to answer questions about current events or "
         "look up information on the web. Input should be a search query, "
-        "optionally filtered by site or publication/index date. "
+        "optionally filtered by site or publication/index date, and optionally with "
+        "an objective that states what the search is for. "
         "Output is a JSON list of the search results."
     )
     args_schema: type[BaseModel] = KeenableSearchInput
@@ -374,6 +391,7 @@ class KeenableSearch(_KeenableBaseTool):
         acquired_after: str | None,
         acquired_before: str | None,
         mode: str | None,
+        objective: str | None = None,
     ) -> list[dict[str, Any]]:
         payload: dict[str, Any] = {"query": query, "mode": mode or self.mode}
         for field, value in (
@@ -385,6 +403,10 @@ class KeenableSearch(_KeenableBaseTool):
         ):
             if value:
                 payload[field] = value
+        # The ranker scores "{query} (task: {objective})"; retrieval reads only
+        # the query. Blank values are not sent.
+        if objective and objective.strip():
+            payload["objective"] = objective.strip()
 
         data = self._post("/v1/search/public", "/v1/search", payload)
         results = data.get("results")
@@ -407,6 +429,7 @@ class KeenableSearch(_KeenableBaseTool):
         acquired_after: str | None = None,
         acquired_before: str | None = None,
         mode: str | None = None,
+        objective: str | None = None,
         run_manager: CallbackManagerForToolRun | None = None,
     ) -> list[dict[str, Any]]:
         """Query the Keenable search API."""
@@ -418,6 +441,7 @@ class KeenableSearch(_KeenableBaseTool):
             acquired_after,
             acquired_before,
             mode,
+            objective,
         )
 
     async def _arun(
@@ -429,6 +453,7 @@ class KeenableSearch(_KeenableBaseTool):
         acquired_after: str | None = None,
         acquired_before: str | None = None,
         mode: str | None = None,
+        objective: str | None = None,
         run_manager: AsyncCallbackManagerForToolRun | None = None,
     ) -> list[dict[str, Any]]:
         """Async query (runs the sync request in a worker thread)."""
@@ -441,6 +466,7 @@ class KeenableSearch(_KeenableBaseTool):
             acquired_after,
             acquired_before,
             mode,
+            objective,
         )
 
 

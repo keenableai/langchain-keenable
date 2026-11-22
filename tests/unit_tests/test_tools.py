@@ -565,3 +565,16 @@ def test_search_bad_payload_redacts_key(mock_post: MagicMock) -> None:
     assert "unexpected response" in out.lower()
     assert key not in out
     assert "***" in out
+
+
+def test_objective_sent_trimmed(mock_post: MagicMock) -> None:
+    tool = KeenableSearch(api_key="fake-key")  # type: ignore[arg-type]
+    tool.invoke({"query": "anything", "objective": "  Find the 2026 figure.  "})
+    assert mock_post.call_args.kwargs["json"]["objective"] == "Find the 2026 figure."
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_blank_objective_not_sent(mock_post: MagicMock, value: str | None) -> None:
+    tool = KeenableSearch(api_key="fake-key")  # type: ignore[arg-type]
+    tool.invoke({"query": "anything", "objective": value})
+    assert "objective" not in mock_post.call_args.kwargs["json"]
