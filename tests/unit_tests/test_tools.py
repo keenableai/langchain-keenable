@@ -578,3 +578,16 @@ def test_blank_objective_not_sent(mock_post: MagicMock, value: str | None) -> No
     tool = KeenableSearch(api_key="fake-key")  # type: ignore[arg-type]
     tool.invoke({"query": "anything", "objective": value})
     assert "objective" not in mock_post.call_args.kwargs["json"]
+
+
+def test_overlong_objective_rejected_before_request(mock_post: MagicMock) -> None:
+    tool = KeenableSearch(api_key="fake-key")  # type: ignore[arg-type]
+    out = tool.invoke({"query": "anything", "objective": "x" * 1001})
+    assert "1000" in out
+    mock_post.assert_not_called()
+
+
+def test_objective_at_limit_sent(mock_post: MagicMock) -> None:
+    tool = KeenableSearch(api_key="fake-key")  # type: ignore[arg-type]
+    tool.invoke({"query": "anything", "objective": " " + "x" * 1000 + " "})
+    assert len(mock_post.call_args.kwargs["json"]["objective"]) == 1000

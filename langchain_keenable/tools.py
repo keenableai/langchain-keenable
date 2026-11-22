@@ -276,6 +276,9 @@ class _KeenableBaseTool(BaseTool):
         return self._handle(response)
 
 
+_MAX_OBJECTIVE_CHARS = 1000
+
+
 class KeenableSearchInput(BaseModel):
     """Input for the Keenable search tool. All filters are per-invocation so an
     agent can vary them per query."""
@@ -406,7 +409,14 @@ class KeenableSearch(_KeenableBaseTool):
         # The ranker scores "{query} (task: {objective})"; retrieval reads only
         # the query. Blank values are not sent.
         if objective and objective.strip():
-            payload["objective"] = objective.strip()
+            objective = objective.strip()
+            if len(objective) > _MAX_OBJECTIVE_CHARS:
+                msg = (
+                    f"objective is {len(objective)} characters; the limit is "
+                    f"{_MAX_OBJECTIVE_CHARS}. Shorten it to two or three sentences."
+                )
+                raise ToolException(msg)
+            payload["objective"] = objective
 
         data = self._post("/v1/search/public", "/v1/search", payload)
         results = data.get("results")
