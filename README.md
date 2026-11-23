@@ -42,7 +42,7 @@ for result in results:
     print(result["title"], result["url"])
 ```
 
-`objective` (optional, at most 1,000 characters) is two or three natural sentences on what the search is for.
+`objective` (optional, at most 1,000 characters) says what the search is for: what the query leaves out and what earlier searches found. Pass it for multi-step or ambiguous questions, not every search.
 Keenable ranks results by `query` and `objective` together; retrieval reads only `query`, so put the words that matter in `query`.
 Blank values are not sent.
 
