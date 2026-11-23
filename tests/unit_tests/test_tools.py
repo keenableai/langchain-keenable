@@ -69,9 +69,9 @@ def mock_post() -> Generator[MagicMock, None, None]:
 
 
 @pytest.fixture
-def mock_get() -> Generator[MagicMock, None, None]:
-    with patch("langchain_keenable.tools.requests.get") as mock:
-        mock.return_value = _ok_response(_FAKE_PAGE)
+def mock_fetch() -> Generator[MagicMock, None, None]:
+    with patch("langchain_keenable.tools.requests.post") as mock:
+        mock.return_value = _ok_response({"results": [_FAKE_PAGE]})
         yield mock
 
 
@@ -294,40 +294,62 @@ def test_api_key_not_exposed_in_repr() -> None:
 # --- fetch tool ---------------------------------------------------------------
 
 
-def test_fetch_returns_page(mock_get: MagicMock) -> None:
-    """Fetch is a GET with a ?url= query param against /v1/fetch."""
+def test_fetch_returns_page(mock_fetch: MagicMock) -> None:
+    """Fetch is a POST of ``{"urls": [url]}`` to /v1/fetch."""
     tool = KeenableFetch(api_key="fake-key")  # type: ignore[arg-type]
 
     out = tool.invoke({"url": "https://example.com/article"})
     assert out == _FAKE_PAGE
-    assert mock_get.call_args.kwargs["params"] == {"url": "https://example.com/article"}
-    assert mock_get.call_args.args[0] == "https://api.keenable.ai/v1/fetch"
-    assert mock_get.call_args.kwargs["headers"]["X-API-Key"] == "fake-key"
+    assert mock_fetch.call_args.kwargs["json"] == {
+        "urls": ["https://example.com/article"]
+    }
+    assert mock_fetch.call_args.args[0] == "https://api.keenable.ai/v1/fetch"
+    assert mock_fetch.call_args.kwargs["headers"]["X-API-Key"] == "fake-key"
 
 
 def test_fetch_without_key_uses_public_path(
-    mock_get: MagicMock, monkeypatch: pytest.MonkeyPatch
+    mock_fetch: MagicMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("KEENABLE_API_KEY", raising=False)
     tool = KeenableFetch()
     tool.invoke({"url": "https://example.com/article"})
-    assert mock_get.call_args.args[0] == "https://api.keenable.ai/v1/fetch/public"
-    assert "X-API-Key" not in mock_get.call_args.kwargs["headers"]
+    assert mock_fetch.call_args.args[0] == "https://api.keenable.ai/v1/fetch/public"
+    assert "X-API-Key" not in mock_fetch.call_args.kwargs["headers"]
 
 
-def test_fetch_rejects_non_http_url(mock_get: MagicMock) -> None:
+def test_fetch_page_error_is_returned_to_the_agent(
+    mock_fetch: MagicMock,
+) -> None:
+    mock_fetch.return_value = _ok_response(
+        {
+            "results": [
+                {
+                    "url": "https://example.com/gone",
+                    "error": {"status": 404, "message": "page not found"},
+                }
+            ]
+        }
+    )
+    tool = KeenableFetch(api_key="fake-key")  # type: ignore[arg-type]
+    out = tool.invoke({"url": "https://example.com/gone"})
+    assert isinstance(out, str)
+    assert "404" in out
+    assert "page not found" in out
+
+
+def test_fetch_rejects_non_http_url(mock_fetch: MagicMock) -> None:
     """SSRF guard: non-http(s) schemes are refused before any request."""
     tool = KeenableFetch(api_key="fake-key")  # type: ignore[arg-type]
     out = tool.invoke({"url": "file:///etc/passwd"})
     assert isinstance(out, str)
     assert "non-http" in out.lower()
-    mock_get.assert_not_called()
+    mock_fetch.assert_not_called()
 
 
-def test_fetch_user_agent(mock_get: MagicMock) -> None:
+def test_fetch_user_agent(mock_fetch: MagicMock) -> None:
     tool = KeenableFetch(api_key="fake-key")  # type: ignore[arg-type]
     tool.invoke({"url": "https://example.com"})
-    assert mock_get.call_args.kwargs["headers"]["User-Agent"].startswith(
+    assert mock_fetch.call_args.kwargs["headers"]["User-Agent"].startswith(
         "keenable-langchain/"
     )
 
@@ -344,14 +366,14 @@ def test_fetch_user_agent(mock_get: MagicMock) -> None:
         "https://metadata.google.internal/",
     ],
 )
-def test_fetch_rejects_private_hosts(mock_get: MagicMock, url: str) -> None:
+def test_fetch_rejects_private_hosts(mock_fetch: MagicMock, url: str) -> None:
     """SSRF guard: loopback / private / link-local / metadata targets are refused
     before any request is sent (the backend also blocks them server-side)."""
     tool = KeenableFetch(api_key="fake-key")  # type: ignore[arg-type]
     out = tool.invoke({"url": url})
     assert isinstance(out, str)
     assert "private/internal" in out.lower()
-    mock_get.assert_not_called()
+    mock_fetch.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -364,10 +386,10 @@ def test_fetch_rejects_private_hosts(mock_get: MagicMock, url: str) -> None:
     ],
 )
 def test_fetch_http_errors_are_returned_not_raised(
-    mock_get: MagicMock, status: int, needle: str
+    mock_fetch: MagicMock, status: int, needle: str
 ) -> None:
     """Fetch surfaces backend errors to the agent as a string, like search."""
-    mock_get.return_value = _error_response(
+    mock_fetch.return_value = _error_response(
         status, {"message": "go upgrade at docs.keenable.ai"}
     )
     tool = KeenableFetch(api_key="fake-key")  # type: ignore[arg-type]
@@ -378,14 +400,14 @@ def test_fetch_http_errors_are_returned_not_raised(
     assert "upgrade" in out
 
 
-def test_fetch_non_json_body_is_returned(mock_get: MagicMock) -> None:
+def test_fetch_non_json_body_is_returned(mock_fetch: MagicMock) -> None:
     """A non-JSON fetch body (e.g. an HTML 502) doesn't escape as a decode error."""
     bad = MagicMock(spec=requests.Response)
     bad.ok = True
     bad.status_code = 200
     bad.json.side_effect = ValueError("no json")
     bad.text = "<html>502 Bad Gateway</html>"
-    mock_get.return_value = bad
+    mock_fetch.return_value = bad
     tool = KeenableFetch(api_key="fake-key")  # type: ignore[arg-type]
 
     out = tool.invoke({"url": "https://example.com/article"})
@@ -393,8 +415,8 @@ def test_fetch_non_json_body_is_returned(mock_get: MagicMock) -> None:
     assert "non-json" in out.lower()
 
 
-def test_fetch_network_timeout_is_returned(mock_get: MagicMock) -> None:
-    mock_get.side_effect = requests.Timeout("timed out")
+def test_fetch_network_timeout_is_returned(mock_fetch: MagicMock) -> None:
+    mock_fetch.side_effect = requests.Timeout("timed out")
     tool = KeenableFetch(api_key="fake-key")  # type: ignore[arg-type]
 
     out = tool.invoke({"url": "https://example.com/article"})
@@ -412,10 +434,10 @@ def test_search_sends_attribution_title(mock_post: MagicMock) -> None:
     assert mock_post.call_args.kwargs["headers"]["X-Keenable-Title"] == "LangChain"
 
 
-def test_fetch_sends_attribution_title(mock_get: MagicMock) -> None:
+def test_fetch_sends_attribution_title(mock_fetch: MagicMock) -> None:
     tool = KeenableFetch(api_key="fake-key")  # type: ignore[arg-type]
     tool.invoke({"url": "https://example.com"})
-    assert mock_get.call_args.kwargs["headers"]["X-Keenable-Title"] == "LangChain"
+    assert mock_fetch.call_args.kwargs["headers"]["X-Keenable-Title"] == "LangChain"
 
 
 # --- SSRF guard: numeric-IP + trailing-dot bypasses ---------------------------
@@ -440,23 +462,23 @@ def test_reject_ssrf_bypass_encodings(url: str) -> None:
         _reject_private_fetch_target(url)
 
 
-def test_reject_ssrf_bypass_encodings_via_tool(mock_get: MagicMock) -> None:
+def test_reject_ssrf_bypass_encodings_via_tool(mock_fetch: MagicMock) -> None:
     """The fetch tool surfaces the rejection as a string without sending."""
     tool = KeenableFetch(api_key="fake-key")  # type: ignore[arg-type]
     out = tool.invoke({"url": "http://2130706433/secret"})
     assert isinstance(out, str)
     assert "private/internal" in out.lower()
-    mock_get.assert_not_called()
+    mock_fetch.assert_not_called()
 
 
-def test_public_numeric_ip_allowed(mock_get: MagicMock) -> None:
+def test_public_numeric_ip_allowed(mock_fetch: MagicMock) -> None:
     """A globally routable numeric IP must still pass the guard."""
     # Direct helper: no exception.
     _reject_private_fetch_target("https://8.8.8.8/x")
     # And through the tool it reaches the request.
     tool = KeenableFetch(api_key="fake-key")  # type: ignore[arg-type]
     tool.invoke({"url": "https://8.8.8.8/x"})
-    assert mock_get.call_args.kwargs["params"] == {"url": "https://8.8.8.8/x"}
+    assert mock_fetch.call_args.kwargs["json"] == {"urls": ["https://8.8.8.8/x"]}
 
 
 # --- base URL rejects private/internal https hosts ----------------------------
