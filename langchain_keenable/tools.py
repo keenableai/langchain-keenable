@@ -7,7 +7,7 @@ import ipaddress
 import os
 import socket
 from importlib import metadata
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn
 from urllib.parse import urlsplit
 
 import requests
@@ -141,6 +141,20 @@ def _resolve_base_url() -> str:
     return base
 
 
+def _raise_api_error(status: int, detail: str, api_key: str | None) -> NoReturn:
+    """Raise the readable ``ToolException`` for an API error status."""
+    detail = _redact(detail[:200], api_key)
+
+    label = {
+        401: "Keenable authentication failed (401)",
+        402: "Keenable: insufficient credits (402)",
+        429: "Keenable rate limit exceeded (429)",
+    }.get(status, f"Keenable API error ({status})")
+
+    msg = f"{label}: {detail}" if detail else label
+    raise ToolException(msg)
+
+
 def _raise_for_keenable_status(
     response: requests.Response, api_key: str | None
 ) -> None:
@@ -165,16 +179,7 @@ def _raise_for_keenable_status(
             )
     except ValueError:
         detail = (response.text or "").strip()
-    detail = _redact(detail[:200], api_key)
-
-    label = {
-        401: "Keenable authentication failed (401)",
-        402: "Keenable: insufficient credits (402)",
-        429: "Keenable rate limit exceeded (429)",
-    }.get(response.status_code, f"Keenable API error ({response.status_code})")
-
-    msg = f"{label}: {detail}" if detail else label
-    raise ToolException(msg)
+    _raise_api_error(response.status_code, detail, api_key)
 
 
 class _KeenableBaseTool(BaseTool):
@@ -247,24 +252,6 @@ class _KeenableBaseTool(BaseTool):
         try:
             response = requests.post(
                 url, json=payload, headers=headers, timeout=self.timeout
-            )
-        except requests.RequestException as e:
-            key = self._effective_key()
-            msg = (
-                f"Could not reach the Keenable API: "
-                f"{type(e).__name__}: {_redact(str(e), key)}"
-            )
-            raise ToolException(msg) from e
-        return self._handle(response)
-
-    def _get(
-        self, public_path: str, keyed_path: str, params: dict[str, Any]
-    ) -> dict[str, Any]:
-        """GET the keyed or keyless endpoint with query ``params``; return the body."""
-        url, headers = self._url_and_headers(public_path, keyed_path)
-        try:
-            response = requests.get(
-                url, params=params, headers=headers, timeout=self.timeout
             )
         except requests.RequestException as e:
             key = self._effective_key()
@@ -453,7 +440,7 @@ class KeenableFetchInput(BaseModel):
 class KeenableFetch(_KeenableBaseTool):
     """Tool that fetches a web page via Keenable and returns its content as markdown.
 
-    Wraps the Keenable ``GET /v1/fetch?url=...`` endpoint: given a URL it returns
+    Wraps the Keenable ``POST /v1/fetch`` endpoint: given a URL it returns
     ``{url, title, content, ...}`` (extra fields such as ``description``, ``author``
     and ``published_at`` appear when the page exposes them). Like search, it uses the
     keyless ``/v1/fetch/public`` endpoint when no key is configured. Pairs with
@@ -483,9 +470,23 @@ class KeenableFetch(_KeenableBaseTool):
             msg = f"Refusing to fetch a non-http(s) URL: {url!r}"
             raise ToolException(msg)
         _reject_private_fetch_target(url)
-        # /v1/fetch is a GET with a ?url= query param (keyless /v1/fetch/public
-        # works too). The backend also rejects private/internal IPs server-side.
-        return self._get("/v1/fetch/public", "/v1/fetch", {"url": url})
+        # POST /v1/fetch takes a list of URLs (keyless /v1/fetch/public takes one).
+        # The backend also rejects private/internal IPs server-side.
+        data = self._post("/v1/fetch/public", "/v1/fetch", {"urls": [url]})
+        results = data.get("results")
+        page = results[0] if isinstance(results, list) and results else None
+        if not isinstance(page, dict):
+            msg = "Unexpected response from the Keenable API: no page in results"
+            raise ToolException(msg)
+        error = page.get("error")
+        if isinstance(error, dict):
+            status = error.get("status")
+            _raise_api_error(
+                status if isinstance(status, int) else 500,
+                str(error.get("message") or error.get("error") or ""),
+                self._effective_key(),
+            )
+        return page
 
     def _run(
         self,
