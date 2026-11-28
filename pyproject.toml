@@ -28,7 +28,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://keenable.ai"
-Documentation = "https://docs.keenable.ai"
+Documentation = "https://docs.keenable.ai/integrations/langchain"
 Repository = "https://github.com/keenableai/langchain-keenable"
 "Source Code" = "https://github.com/keenableai/langchain-keenable"
 

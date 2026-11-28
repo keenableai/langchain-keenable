@@ -3,6 +3,8 @@
 This package contains the LangChain integration with [Keenable](https://keenable.ai), a web search
 and page-fetch API built for AI agents.
 
+Guide with an agent example and MCP setup: [docs.keenable.ai/integrations/langchain](https://docs.keenable.ai/integrations/langchain).
+
 ## Installation
 
 ```bash
@@ -13,7 +15,7 @@ Optionally set a `KEENABLE_API_KEY` environment variable to use the authenticate
 key, both search and fetch transparently fall back to their keyless public endpoints.
 
 ```bash
-export KEENABLE_API_KEY="your-api-key"  # optional; create one at https://keenable.ai/console
+export KEENABLE_API_KEY="your-api-key"  # optional; create one at https://app.keenable.ai/console/api-keys
 ```
 
 The API endpoint defaults to `https://api.keenable.ai` and can be overridden (e.g. for staging) with the
